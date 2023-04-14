@@ -13,10 +13,10 @@
 #include "stb_image_write.h"
 
 #define BINS 256
-#define BLOCK_SIZE 32 //TODO this probably needs to be changed to 256 or 512
+#define BLOCK_SIZE 32
 
 
-
+// calculate histogram on CPU 
 void histogramCPU(unsigned char *imageIn,
                   unsigned int *hist,
                   int width, int height, int cpp)
@@ -32,7 +32,7 @@ void histogramCPU(unsigned char *imageIn,
         }
 } // end of histogramCPU
 
-
+// print the histogram by component (RED, GREEN, BLUE)
 void printHistogram(unsigned int *hist)
 {
     printf("Colour\tNo. Pixels\n");
@@ -48,7 +48,7 @@ void printHistogram(unsigned int *hist)
 }
 
 
-// a GPU kernel to compute the histogram on the GPU
+// GPU kernel to compute the histogram on the GPU
 __global__ void histogramGPU(unsigned char* imageIn,
                              unsigned int* hist,
                              int width, int height, int cpp)
@@ -63,10 +63,35 @@ __global__ void histogramGPU(unsigned char* imageIn,
     // check that threads dont check pixels "outside" the image
     if ( tid_global_i < height && tid_global_j < width) {
 
-        atomicAdd(&hist[imageIn[(tid_global_i * width + tid_global_j) * cpp]], 1);              // RED
+        atomicAdd(&hist[imageIn[(tid_global_i * width + tid_global_j) * cpp]], 1);               // RED
         atomicAdd(&hist[imageIn[(tid_global_i * width + tid_global_j) * cpp + 1]+ BINS], 1);     // GREEN
         atomicAdd(&hist[imageIn[(tid_global_i * width + tid_global_j) * cpp + 2]+ 2*BINS], 1);   // BLUE
     }
+
+}
+
+
+// Sequential cumulative sum of the histogram
+void cumulative_histogram_cpu(unsigned int* h_hist_seq, unsigned int* cumulative, int bins) {
+    
+    // Calculate the cumulative histogram for each color
+    for (int i = 0; i < bins; i++) {
+        cumulative[i] = h_hist_seq[i] + ((i > 0) ? cumulative[i-1] : 0);
+        cumulative[bins + i] = h_hist_seq[bins + i] + ((i > 0) ? cumulative[bins + i - 1] : 0);
+        cumulative[2 * bins + i] = h_hist_seq[2 * bins + i] + ((i > 0) ? cumulative[2 * bins + i - 1] : 0);
+    }
+
+}
+
+
+// GPU kernel to compute the cumulative histogram on the GPU
+__global__ void cumulative_histogram_gpu(unsigned int* d_histGPU, unsigned int* d_cumulative, int bins) {
+
+    // calculate global and local id and use them to calculate the pixel index
+
+    int tid_global = blockDim.x * blockIdx.x + threadIdx.x;
+    int tid_local = threadIdx.x;
+    int tid_block = blockIdx.x;
 
 }
 
@@ -87,11 +112,13 @@ int main(int argc, char **argv)
     }
 
     // Initalize variables
-    unsigned int *h_hist;
-    unsigned int *h_hist_seq;
-    unsigned int *d_histGPU;
-    unsigned char *d_imageGPU;
-    int width, height, cpp;
+    unsigned int *h_hist;           // histogram on host for copying to/from device
+    unsigned int *h_hist_seq;       // histogram on host for sequential computation
+    unsigned int *d_histGPU;        // histogram on device
+    unsigned char *d_imageGPU;      // image on device
+    unsigned int *d_cumulative;     // cumulative histogram on device
+    unsigned int *h_cumulative;     // cumulative histogram on host for copying to/from device
+    int width, height, cpp;         // image properties
 
     // load the image
     unsigned char *image_in = stbi_load(image_file, &width, &height, &cpp, 0); 
@@ -103,7 +130,7 @@ int main(int argc, char **argv)
     
     if (image_in)
     {
-        // Compute and print the histogram
+        // Compute and print the on CPU 
 
         cudaEvent_t start, stop;
         cudaEventCreate(&start);
@@ -131,9 +158,11 @@ int main(int argc, char **argv)
     
     //########## GPU ##########
 
-    // Compute and print the histogram
-    if (image_in) // if image loaded
+    
+    if (image_in)
     {
+        // compute the histogram on the GPU
+
         // initialize the timig variables
         cudaEvent_t start, stop;
         cudaEventCreate(&start);
@@ -206,16 +235,53 @@ int main(int argc, char **argv)
                 break;
             }
         }
-        if (same == 0)
+        if (!same)
         {
             printf("Histograms are the same!\n");
         }
 
-    }
+    } //end of hist on GPU
     else
     {
         fprintf(stderr, "Error loading image %s!\n", image_file);
     }
+
+    // TODO Naloga 6 
+    // 1. caluculate the cumulative sum of each color in histogram 
+    //      - on CPU (sequential) 
+    //      - GPU (parallel) with shared memory (glej vaje 6)
+    //      - primerjaj rezultate 
+    // 2. adjust the image so that the histogram is spread out evenly (sequential) and GPU (parallel)
+    //      - a morm to tut na CPU in GPU?  
+
+    //########## CUMULATIVE SUM ##########
+
+    // --------------------- CPU ---------------------
+
+    // Allocate memory for the output array
+    unsigned int* h_cumulative_seq = (unsigned int*) calloc(3 * BINS, sizeof(unsigned int));
+
+    // Call the function to calculate the cumulative histogram
+    cumulative_histogram_cpu(h_hist_seq, h_cumulative_seq, BINS);
+
+
+    // --------------------- GPU ---------------------
+    
+    // Allocate memory for the output array
+    unsigned int* h_cumulative = (unsigned int*) calloc(3 * BINS, sizeof(unsigned int));
+
+    // allocate and copy the histogram to the GPU
+    checkCudaErrors(cudaMalloc(&d_cumulative, 3 * BINS* sizeof(unsigned int)));
+    checkCudaErrors(cudaMemcpy(d_cumulative, h_cumulative, 3 * BINS* sizeof(unsigned int), cudaMemcpyHostToDevice));
+
+    // Set the thread execution grid (1 block)
+    dim3 blockSize(256);
+
+    // set grid size so we have 3 block one for each color
+    dim3 gridSize(3);
+
+    // call the kernel
+    // TODO cumulative_histogram<<<gridSize, blockSize>>>(d_histGPU, d_cumulative, BINS);
 
     //########## CLEAN UP ##########
 
@@ -225,6 +291,9 @@ int main(int argc, char **argv)
     // Free the histograms
     free(h_hist);
     free(h_hist_seq);
+    
+    // Free the cumulative histogram
+    free(h_cumulative_seq);
 
     return 0;
 }
