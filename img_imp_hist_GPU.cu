@@ -112,13 +112,17 @@ int main(int argc, char **argv)
     }
 
     // Initalize variables
-    unsigned int *h_hist;           // histogram on host for copying to/from device
+
     unsigned int *h_hist_seq;       // histogram on host for sequential computation
+    unsigned int *h_hist;           // histogram on host for copying to/from device
     unsigned int *d_histGPU;        // histogram on device
     unsigned char *d_imageGPU;      // image on device
-    unsigned int *d_cumulative;     // cumulative histogram on device
-    unsigned int *h_cumulative;     // cumulative histogram on host for copying to/from device
     int width, height, cpp;         // image properties
+
+    unsigned int *h_cumulative_seq; // cumulative histogram on host for sequential computation
+    unsigned int *h_cumulative;     // cumulative histogram on host for copying to/from device
+    unsigned int *d_cumulative;     // cumulative histogram on device
+
 
     // load the image
     unsigned char *image_in = stbi_load(image_file, &width, &height, &cpp, 0); 
@@ -259,7 +263,7 @@ int main(int argc, char **argv)
     // --------------------- CPU ---------------------
 
     // Allocate memory for the output array
-    unsigned int* h_cumulative_seq = (unsigned int*) calloc(3 * BINS, sizeof(unsigned int));
+    h_cumulative_seq = (unsigned int*) calloc(3 * BINS, sizeof(unsigned int));
 
     // Call the function to calculate the cumulative histogram
     cumulative_histogram_cpu(h_hist_seq, h_cumulative_seq, BINS);
@@ -268,7 +272,7 @@ int main(int argc, char **argv)
     // --------------------- GPU ---------------------
     
     // Allocate memory for the output array
-    unsigned int* h_cumulative = (unsigned int*) calloc(3 * BINS, sizeof(unsigned int));
+    h_cumulative = (unsigned int*) calloc(3 * BINS, sizeof(unsigned int));
 
     // allocate and copy the histogram to the GPU
     checkCudaErrors(cudaMalloc(&d_cumulative, 3 * BINS* sizeof(unsigned int)));

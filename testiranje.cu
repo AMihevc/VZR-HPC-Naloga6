@@ -27,6 +27,75 @@ void cumulative_histogram_cpu(unsigned int* h_hist_seq, unsigned int* cumulative
 
 }
 
+//gpu kernel for cumulative histogram calculation
+__global__ void cumulative_histogram(unsigned int* d_histGPU, unsigned int* d_cumulative) {
+
+    //get ids 
+    int tid_global = blockDim.x * blockIdx.x + threadIdx.x;
+    int tid_local = threadIdx.x;
+    int local_size = blockDim.x;
+    int max = 0;
+
+    //create a local sum array 
+    // this can only be seen by threads within the same block
+    __shared__ unsigned int localSum[BINS];
+
+    //copy the histogram to the local sum array
+    localSum[tid_local] = 0;
+    if(tid_local < local_size){
+        localSum[tid_local] = d_histGPU[tid_global];
+    }
+
+    //wait for all threads to finish copying (within a block)
+    __syncthreads();
+
+    // FAZA 1 - REDUCTION
+    //reduce the local sum array to a single value
+    for (int stride = 2; stride <= local_size; stride <<= 1) {
+
+        if (tid_local % stride == stride - 1 ) {
+            localSum[tid_local] += localSum[tid_local - stride / 2];
+        }
+        __syncthreads();
+    }
+
+    // resetiraj max vrednost ker se bo še enkrat zračunala v drugi fazi
+    // to je trajal samo celo večnost da sm pogruntu zakaj je narobe:/ 
+    if (tid_local == local_size - 1) {
+        max = localSum[tid_local];
+        localSum[tid_local] = 0;
+    
+    }
+
+    // FAZA 2 - SCAN
+    for (int stride = local_size; stride >= 2; stride >>= 1) {
+
+        if (tid_local % stride == stride - 1 ) {
+            int temp = localSum[tid_local]; // zapomni si vrednost na trenunti poziciji
+            localSum[tid_local] += localSum[tid_local - stride / 2]; //seštej 
+            localSum[tid_local - stride / 2] = temp; // prepiši vrednost na sešteti 
+        }
+        __syncthreads();
+    }
+
+    __syncthreads();
+
+    // prepisocanje vrednosti iz lokalnega v globalni array
+    //vse razn zadnje
+    if(tid_local < local_size - 1){
+
+        d_cumulative[tid_global] = localSum[tid_local + 1];
+    }
+
+    if (tid_local == local_size - 1) {
+        d_cumulative[tid_global] = max;
+    }
+    __syncthreads();
+    //TODO find samllest non zero in each BIN
+
+    
+}
+
 
 int main() {
     
@@ -48,11 +117,75 @@ int main() {
 
 
     // ################# GPU #################
+    
+    // Declare and initialize the GPU histogram array
+    // unsigned int *h_cumulative;     // cumulative histogram on host for copying to/from device
+    unsigned int *d_cumulative;     // cumulative histogram on device
+    unsigned int *d_histGPU;        // histogram on device
+    
+    // Allocate memory for the output array
+    unsigned int* h_cumulative = (unsigned int*) calloc(3 * BINS, sizeof(unsigned int));
+
+    // allocate and copy the histogram to the GPU
+    checkCudaErrors(cudaMalloc(&d_cumulative, 3 * BINS* sizeof(unsigned int)));
+    checkCudaErrors(cudaMemcpy(d_cumulative, h_cumulative, 3 * BINS* sizeof(unsigned int), cudaMemcpyHostToDevice));
+
+    // allocate and copy the histogram to the GPU
+    checkCudaErrors(cudaMalloc(&d_histGPU, 3 * BINS* sizeof(unsigned int)));
+    checkCudaErrors(cudaMemcpy(d_histGPU, h_hist_seq, 3 * BINS* sizeof(unsigned int), cudaMemcpyHostToDevice));
+
+    // Set the thread execution grid (1 block)
+    dim3 blockSize(256);
+
+    // set grid size so we have 3 block one for each color
+    dim3 gridSize(3);
+
+    // call the kernel
+    cumulative_histogram<<<gridSize, blockSize>>>(d_histGPU, d_cumulative);
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) 
+    {
+        printf("cudaGetDeviceCount error %d\n-> %s\n", err, cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
+
+    // copy the histogram back to the CPU
+    checkCudaErrors(cudaMemcpy(h_cumulative, d_cumulative, 3 * BINS* sizeof(unsigned int), cudaMemcpyDeviceToHost));
+    //printf("Copied mem from the GPU to the CPU\n");
 
 
-
+    cudaFree(d_cumulative);
+    cudaFree(d_histGPU);
 
     // ################# IZPISI #################
+
+    // Print the histogram CPU
+    // printf("HISTOGRAM CPU : \n");
+    // for (int i = 0; i < BINS; i++) {
+    //     printf("index: %d R: %d ", i, cumulative_one[i]);
+    //     printf("G: %d ", cumulative_one[i + BINS]);
+    //     printf("B: %d \n", cumulative_one[i + 2 * BINS]);
+    // }
+
+    // Print the histogram GPU
+    // printf("HISTOGRAM GPU : \n");
+    // for (int i = 0; i < BINS; i++) {
+    //     printf("index: %d R: %d ", i,  h_cumulative[i]);
+    //     printf("G: %d ", h_cumulative[i + BINS]);
+    //     printf("B: %d \n", h_cumulative[i + 2 * BINS]);
+    // }
+
+    //chekc if CPU and GPU are the same
+    int same = 1;
+    for (int i = 0; i < 3 * BINS; i++) {
+        if (cumulative_one[i] != h_cumulative[i]) {
+            printf("ERROR: %d \n", i);
+            same = 0;
+        }
+    }
+    if (same) printf("SAME \n");
+
 
     // Print the cumulative histograms
     // printf("CUMULATIVE: \n");
@@ -78,6 +211,8 @@ int main() {
     // Free the memory allocated for the arrays
     free(h_hist_seq);
     free(cumulative_one);
+    free(h_cumulative);
+
 
     return 0;
 }
