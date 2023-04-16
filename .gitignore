@@ -3,3 +3,6 @@ image_hist
 sample
 test
 test2
+*.png
+*.jpg
+image_imp_hist

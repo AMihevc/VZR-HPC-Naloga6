@@ -27,6 +27,25 @@ void cumulative_histogram_cpu(unsigned int* h_hist_seq, unsigned int* cumulative
 
 }
 
+// Calc of of histogram equalization on the CPU
+void CPU_Equalization(unsigned char* image, unsigned int* cdf, unsigned int* cdf_min,  int width, int height)
+{
+    // Calc equalization
+    for (int i = 0; i < height; i++)
+        for (int j = 0; j < width; j++)
+        {
+            int r = image[(i * width + j) * 4]; // RED
+            int g = image[(i * width + j) * 4 + 1]; // GREEN
+            int b = image[(i * width + j) * 4 + 2]; // BLUE
+            double new_r = round(((double)((cdf)[r] - cdf_min[0]) / (double)(height*width - cdf_min[0])) * (BINS - 1));
+            double new_g = round(((double)((cdf+BINS)[g] - cdf_min[1]) / (double)(height*width - cdf_min[1])) * (BINS - 1));
+            double new_b = round(((double)((cdf+BINS*2)[b] - cdf_min[2]) / (double)(height*width - cdf_min[2])) * (BINS - 1));
+            image[(i * width + j) * 4] = (unsigned char)new_r;
+            image[(i * width + j) * 4 + 1] = (unsigned char)new_g;
+            image[(i * width + j) * 4 + 2] = (unsigned char)new_b;
+        }
+}
+
 //gpu kernel for cumulative histogram calculation
 __global__ void cumulative_histogram(unsigned int* d_histGPU, unsigned int* d_cumulative, unsigned int* d_cdf_mins, int chanels) {
 
@@ -130,7 +149,7 @@ int main() {
     // ################# GPU #################
     
     // Declare and initialize the GPU histogram array
-    // unsigned int *h_cumulative;     // cumulative histogram on host for copying to/from device
+    unsigned int *h_cumulative;     // cumulative histogram on host for copying to/from device
     unsigned int *d_cumulative;     // cumulative histogram on device
     unsigned int *d_histGPU;        // histogram on device
     unsigned int *h_cdf_mins;         // minimum values of each bin on device
@@ -145,7 +164,7 @@ int main() {
 
     
     // Allocate memory for the output array
-    unsigned int* h_cumulative = (unsigned int*) calloc(3 * BINS, sizeof(unsigned int));
+    h_cumulative = (unsigned int*) calloc(3 * BINS, sizeof(unsigned int));
 
     // allocate and copy the histogram to the GPU
     checkCudaErrors(cudaMalloc(&d_cumulative, 3 * BINS* sizeof(unsigned int)));
