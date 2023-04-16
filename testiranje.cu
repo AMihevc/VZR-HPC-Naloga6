@@ -28,13 +28,14 @@ void cumulative_histogram_cpu(unsigned int* h_hist_seq, unsigned int* cumulative
 }
 
 //gpu kernel for cumulative histogram calculation
-__global__ void cumulative_histogram(unsigned int* d_histGPU, unsigned int* d_cumulative) {
+__global__ void cumulative_histogram(unsigned int* d_histGPU, unsigned int* d_cumulative, unsigned int* d_cdf_mins, int chanels) {
 
     //get ids 
-    int tid_global = blockDim.x * blockIdx.x + threadIdx.x;
-    int tid_local = threadIdx.x;
-    int local_size = blockDim.x;
-    int max = 0;
+    int tid_global = blockDim.x * blockIdx.x + threadIdx.x; // 0 - 3*256
+    int tid_local = threadIdx.x; // 0-256
+    int tid_block = blockIdx.x; // 0-3
+    int local_size = blockDim.x; // 256
+    int max = 0; //for max element in each bin
 
     //create a local sum array 
     // this can only be seen by threads within the same block
@@ -93,7 +94,17 @@ __global__ void cumulative_histogram(unsigned int* d_histGPU, unsigned int* d_cu
     __syncthreads();
     //TODO find samllest non zero in each BIN
 
-    
+    if (tid_local == 0) {
+        for (int i = 0; i < local_size; i++) {
+            if (localSum[i] != 0) {
+                d_cdf_mins[tid_block] = localSum[i];
+                break;
+            }
+        }
+
+    }
+
+
 }
 
 
@@ -122,6 +133,16 @@ int main() {
     // unsigned int *h_cumulative;     // cumulative histogram on host for copying to/from device
     unsigned int *d_cumulative;     // cumulative histogram on device
     unsigned int *d_histGPU;        // histogram on device
+    unsigned int *h_cdf_mins;         // minimum values of each bin on device
+    unsigned int *d_cdf_mins;         // minimum values of each bin on device
+
+    //allocate memory for cdf mins
+    h_cdf_mins = (unsigned int*) calloc(3, sizeof(unsigned int));
+
+    //allocate and copy the cdf mins to the GPU
+    checkCudaErrors(cudaMalloc(&d_cdf_mins, 3 * sizeof(unsigned int)));
+    checkCudaErrors(cudaMemcpy(d_cdf_mins, h_cdf_mins, 3 * sizeof(unsigned int), cudaMemcpyHostToDevice));
+
     
     // Allocate memory for the output array
     unsigned int* h_cumulative = (unsigned int*) calloc(3 * BINS, sizeof(unsigned int));
@@ -141,7 +162,7 @@ int main() {
     dim3 gridSize(3);
 
     // call the kernel
-    cumulative_histogram<<<gridSize, blockSize>>>(d_histGPU, d_cumulative);
+    cumulative_histogram<<<gridSize, blockSize>>>(d_histGPU, d_cumulative, d_cdf_mins, 3);
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) 
@@ -150,8 +171,12 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    // copy the histogram back to the CPU
+    // copy the cumulative histogram back to the CPU
     checkCudaErrors(cudaMemcpy(h_cumulative, d_cumulative, 3 * BINS* sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+    //copy the cdf mins back to the CPU
+    checkCudaErrors(cudaMemcpy(h_cdf_mins, d_cdf_mins, 3 * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
     //printf("Copied mem from the GPU to the CPU\n");
 
 
@@ -185,6 +210,10 @@ int main() {
         }
     }
     if (same) printf("SAME \n");
+
+    //print cdf_mins
+    printf("CDF MINS: \n");
+    printf("R: %d G: %d B: %d \n", h_cdf_mins[0], h_cdf_mins[1], h_cdf_mins[2]);
 
 
     // Print the cumulative histograms
